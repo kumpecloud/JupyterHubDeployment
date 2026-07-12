@@ -1,0 +1,102 @@
+# Development Environment Config Example
+# File location: .kumpeapps-deploy-bot/dev/myapp.yml
+
+deployment_type: docker
+assigned_username: your-github-username
+vm_hostname: dev-vm-myapp
+
+# Optional: VM user management
+# Users will be created on the VM and added to bot-admin group
+# Smart groups:
+#   - github.repo.collaborators (all repo collaborators)
+#   - github.repo.admins (repo admins only)
+#   - github.org.team.TEAM_SLUG (org team members - uses repo owner as org)
+#   - github.org.ORG_NAME.team.TEAM_SLUG (specific org team)
+# Note: Organization team smart groups require GitHub App to have
+# "Organization: Members" read permission. Without this permission,
+# team expansion will fail and you should use individual usernames instead.
+authorized_admins:
+  - github.repo.admins
+  # - github.org.kumpeapps.team.vm-admins  # Requires org-level GitHub App permissions
+  # - justinkumpe  # Or specify individual usernames
+
+# Domains for reverse proxy
+domains:
+  - example.dev.kumpe.app
+
+# Docker Compose - reference file in same directory
+# Note: Managed Nebula VPN client is automatically injected as the first service
+# You don't need to include it in your docker-compose.yml
+docker_compose: docker-compose.yml
+
+# Inline example:
+# docker_compose: |
+#   version: '3.8'
+#   services:
+#     web:
+#       image: myapp:dev
+#       ports:
+#         - "8080:8080"
+#       environment:
+#         NODE_ENV: development
+#         LOG_LEVEL: debug
+
+# Caddy configuration
+# Place a file named 'caddyfile' in the same directory as this config file
+# The caddyfile will be deployed as: {owner}-{repo}-{env}.caddy
+# Example: 'kumpeapps-myapp-dev.caddy'
+#
+# All domains in the caddyfile must be:
+#   1. Declared in the 'domains' list above
+#   2. In your authorized domains list
+#
+# caddyfile example:
+# {{DOMAIN}} {
+#   import ssl_defaults
+#   reverse_proxy {{nebula.ip}}:8080
+# }
+#
+# Available placeholders:
+#   {{vm.ip}} - VM IP address
+#   {{nebula.ip}} - Nebula VPN IP (from DEV_NEBULA_IP secret)
+
+# Environment variable mappings
+# Map container env vars to GitHub repository secrets
+env_mappings:
+  NEBULA_CLIENT_TOKEN: DEV_NEBULA_CLIENT_TOKEN  # Required for automatic VPN client injection
+
+# Deployment rules for dev environment
+#
+# Label-based deployment for PRs:
+#   - Add "deploy-dev" label to any PR to enable deployment
+#   - Every push to that PR triggers deployment automatically
+#   - Bot removes "deploy-dev" from other PRs (only one PR deployed at a time)
+#   - Works with ANY branch - no branch restrictions
+deploy_rules:
+  - environment: dev
+    labels:
+      - deploy-dev
+
+# Optional: Add branch filtering to label-based deployment
+# deploy_rules:
+#   - environment: dev
+#     labels:
+#       - deploy-dev
+#     branches:
+#       include:
+#         - feature/**
+#         - develop
+#       exclude:
+#         - main
+#         - release/**
+
+# Alternative: Deploy all pushes to matching branches (no label required)
+# deploy_rules:
+#   - environment: dev
+#     branches:
+#       include:
+#         - develop
+#         - dev
+#         - feature/**
+#       exclude:
+#         - main
