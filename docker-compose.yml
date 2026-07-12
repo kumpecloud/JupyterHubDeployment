@@ -1,0 +1,28 @@
+services:
+  jupyterhub:
+    image: ${JUPYTERHUB_IMAGE:-ghcr.io/kumpecloud/jupyterhubdeployment:latest}
+    container_name: jupyterhub
+    hostname: jupyterhub
+    env_file:
+      - .env
+    environment:
+      DOCKER_NETWORK_NAME: ${DOCKER_NETWORK_NAME:-jupyterhub_network}
+      DOCKER_JUPYTER_IMAGE: ${DOCKER_JUPYTER_IMAGE:-quay.io/jupyter/minimal-notebook:latest}
+      JUPYTERHUB_HUB_CONNECT_IP: jupyterhub
+    volumes:
+      # Lets JupyterHub spawn sibling user containers on the host Docker daemon
+      - /var/run/docker.sock:/var/run/docker.sock
+      # Persistent Hub DB / cookie secret
+      - jupyterhub_data:/data
+    ports:
+      - "${JUPYTERHUB_PORT:-8000}:8000"
+    networks:
+      - jupyterhub_network
+    restart: unless-stopped
+
+networks:
+  jupyterhub_network:
+    name: ${DOCKER_NETWORK_NAME:-jupyterhub_network}
+
+volumes:
+  jupyterhub_data:
