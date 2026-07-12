@@ -1,0 +1,11 @@
+.git
+.github
+.kumpeapps-deploy-bot
+.env
+.env.*
+!.env.example
+*.md
+.gitleaks.toml
+.gitleaksignore
+**/*.pyc
+**/__pycache__

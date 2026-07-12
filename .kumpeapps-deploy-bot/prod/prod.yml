@@ -2,8 +2,8 @@
 # File location: .kumpeapps-deploy-bot/prod/myapp.yml
 
 deployment_type: docker
-assigned_username: your-github-username
-vm_hostname: prod-vm-myapp
+assigned_username: justinumpe
+vm_hostname: prod-vm-jupyterhub
 
 # Optional: VM user management
 # Users will be created on the VM and added to bot-admin group
@@ -19,11 +19,11 @@ authorized_admins:
   - github.repo.admins
   # - github.org.kumpeapps.team.vm-admins  # Requires org-level GitHub App permissions
   # - justinkumpe  # Or specify individual usernames
-  - specific-admin-username
+  - justinumpe
 
 # Domains for reverse proxy
 domains:
-  - example.kumpe.app
+  - jupyter.kumpe.app
 
 # Docker Compose - reference file in same directory
 # Note: Managed Nebula VPN client is automatically injected as the first service
@@ -66,6 +66,20 @@ docker_compose: docker-compose.yml
 # Map container env vars to GitHub repository secrets
 env_mappings:
   NEBULA_CLIENT_TOKEN: PROD_NEBULA_CLIENT_TOKEN  # Required for automatic VPN client injection
+  JUPYTERHUB_IMAGE: JUPYTERHUB_IMAGE
+  DOCKER_NETWORK_NAME: DOCKER_NETWORK_NAME
+  DOCKER_JUPYTER_IMAGE: DOCKER_JUPYTER_IMAGE
+  JUPYTERHUB_PORT: JUPYTERHUB_PORT
+  OAUTH_CLIENT_ID: OAUTH_CLIENT_ID
+  OAUTH_CLIENT_SECRET: OAUTH_CLIENT_SECRET
+  OAUTH_CALLBACK_URL: OAUTH_CALLBACK_URL
+  JUPYTERHUB_ADMIN_USERS: JUPYTERHUB_ADMIN_USERS
+  AUTHENTICATOR: AUTHENTICATOR
+  OAUTH_AUTHORIZE_URL: OAUTH_AUTHORIZE_URL
+  OAUTH_TOKEN_URL: OAUTH_TOKEN_URL
+  OAUTH_USERDATA_URL: OAUTH_USERDATA_URL
+  OAUTH_USERNAME_CLAIM: OAUTH_USERNAME_CLAIM
+  OAUTH_SCOPE: OAUTH_SCOPE
 
 # Deployment rules for production environment
 #
