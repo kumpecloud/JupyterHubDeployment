@@ -1,0 +1,6 @@
+# KumpeApps Deployment Bot - Gitleaks Ignore
+# Ignore template files that contain example environment variable mappings
+
+.kumpeapps-deploy-bot/dev/dev-example.yml.template
+.kumpeapps-deploy-bot/stage/stage-example.yml.template
+.kumpeapps-deploy-bot/prod/prod-example.yml.template

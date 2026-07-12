@@ -1,0 +1,37 @@
+# Gitleaks configuration for KumpeApps Deployment Bot
+# This file excludes common false positives in deployment configuration files
+
+[allowlist]
+description = "Allow deployment bot configuration patterns"
+
+# Exclude all template files
+paths = [
+  '''\.template$''',
+  '''\.template\.yml$''',
+  '''\.template\.yaml$''',
+]
+
+# Stopwords - normalized to lowercase (bot normalizes before matching)
+stopwords = [
+  "nebula_client_token",
+  "dev_nebula_client_token", 
+  "stage_nebula_client_token",
+  "prod_nebula_client_token",
+  "database_url",
+  "api_key",
+  "redis_url",
+  "dev_database_url",
+  "dev_api_key",
+  "dev_redis_url",
+  "stage_database_url",
+  "stage_api_key",
+  "stage_redis_url",
+  "prod_database_url",
+  "prod_api_key",
+  "prod_redis_url",
+]
+
+# Allow lines that are clearly env var mappings (not actual secrets)
+regexes = [
+  '''^\s*[A-Z_]+:\s+[A-Z_]+\s*(#.*)?$''',
+]
