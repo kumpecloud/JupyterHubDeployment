@@ -2,7 +2,7 @@
 # File location: .kumpeapps-deploy-bot/prod/myapp.yml
 
 deployment_type: docker
-assigned_username: justinumpe
+assigned_username: justinkumpe
 vm_hostname: prod-vm-jupyterhub
 
 # Optional: VM user management
