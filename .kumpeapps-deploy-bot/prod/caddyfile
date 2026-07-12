@@ -1,0 +1,5 @@
+caddyfile example:
+{{DOMAIN}} {
+  import ssl_defaults
+  reverse_proxy {{nebula.ip}}:8080
+}
