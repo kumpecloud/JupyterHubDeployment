@@ -2,7 +2,8 @@ FROM jupyterhub/jupyterhub:latest
 
 RUN pip install --no-cache-dir \
     dockerspawner \
-    oauthenticator
+    oauthenticator \
+    jupyterhub-idle-culler
 
 COPY jupyterhub_config.py /srv/jupyterhub/jupyterhub_config.py
 

@@ -2,3 +2,9 @@
 *.pyc
 __pycache__/
 .DS_Store
+
+# Local bind-mount data (next to docker-compose.yml)
+/data/**
+!/data/.gitkeep
+/workspaces/**
+!/workspaces/.gitkeep

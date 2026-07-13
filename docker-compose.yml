@@ -9,11 +9,18 @@ services:
       DOCKER_NETWORK_NAME: ${DOCKER_NETWORK_NAME:-jupyterhub_network}
       DOCKER_JUPYTER_IMAGE: ${DOCKER_JUPYTER_IMAGE:-quay.io/jupyter/minimal-notebook:latest}
       JUPYTERHUB_HUB_CONNECT_IP: jupyterhub
+      # Paths inside the Hub container (bind sources below)
+      WORKSPACES_ROOT: /workspaces
+      # Absolute host paths for DockerSpawner binds (must match the host side of the binds)
+      DATA_HOST_PATH: ${DATA_HOST_PATH}
+      WORKSPACES_HOST_PATH: ${WORKSPACES_HOST_PATH}
     volumes:
       # Lets JupyterHub spawn sibling user containers on the host Docker daemon
       - /var/run/docker.sock:/var/run/docker.sock
-      # Persistent Hub DB / cookie secret
-      - jupyterhub_data:/data
+      # Hub DB / cookie secret / per-user notebook dirs (./data/users/<user>)
+      - ./data:/data
+      # Shared Logto workspaces (./workspaces/<name>)
+      - ./workspaces:/workspaces
     ports:
       - "${JUPYTERHUB_PORT:-8000}:8000"
     networks:
@@ -23,6 +30,3 @@ services:
 networks:
   jupyterhub_network:
     name: ${DOCKER_NETWORK_NAME:-jupyterhub_network}
-
-volumes:
-  jupyterhub_data:
