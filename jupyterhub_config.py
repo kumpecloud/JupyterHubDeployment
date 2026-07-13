@@ -137,7 +137,7 @@ if inactive_user_cull_days > 0:
                 "jupyterhub_idle_culler",
                 f"--timeout={inactive_timeout}",
                 f"--cull-every={inactive_every}",
-                "--cull-users",
+                "--cull-users=True",
             ],
         }
     )

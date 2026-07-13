@@ -48,7 +48,7 @@ Persistent data lives next to compose (not named volumes):
 1. API resource indicator = `OAUTH_RESOURCE` (e.g. `https://jupyter.kumpe.app`)
 2. Permissions named `jupyterhub:workspace:<name>` (e.g. `jupyterhub:workspace:kumpe3d`)
 3. Assign via roles to users
-4. Create an M2M app with Management API access; set `LOGTO_M2M_*` in `.env`
+4. Create an M2M app with Management API access; set `LOGTO_M2M_*` and `LOGTO_MANAGEMENT_API_RESOURCE=https://default.kumpe.app/api` in `.env`
 5. Hub polls the API resource scopes and requests them on every login
 6. After adding a **new** workspace permission: wait for the poll (`WORKSPACE_SCOPE_POLL_SECONDS`), then **logout and login** once
 
