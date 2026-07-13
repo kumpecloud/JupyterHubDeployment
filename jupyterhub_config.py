@@ -13,6 +13,7 @@ import re
 import sys
 import threading
 import time
+import urllib.error
 import urllib.parse
 import urllib.request
 from typing import Any
@@ -284,11 +285,19 @@ def _http_json(
     timeout: float = 30.0,
 ) -> Any:
     request = urllib.request.Request(url, data=body, method=method, headers=headers or {})
-    with urllib.request.urlopen(request, timeout=timeout) as response:
-        payload = response.read().decode("utf-8")
-        if not payload:
-            return None
-        return json.loads(payload)
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            payload = response.read().decode("utf-8")
+            if not payload:
+                return None
+            return json.loads(payload)
+    except urllib.error.HTTPError as exc:
+        err_body = ""
+        try:
+            err_body = exc.read().decode("utf-8", errors="replace")
+        except Exception:
+            pass
+        raise RuntimeError(f"{method} {url} -> HTTP {exc.code}: {err_body or exc.reason}") from exc
 
 
 def _decode_jwt_payload(token: str) -> dict[str, Any]:
@@ -316,10 +325,12 @@ def _get_m2m_token() -> str | None:
     if _m2m_token and now < (_m2m_token_expires_at - 60):
         return _m2m_token
 
-    basic = base64.b64encode(f"{app_id}:{app_secret}".encode("utf-8")).decode("ascii")
+    # Logto accepts client_id/secret in the body (preferred) and/or Basic auth.
     body = urllib.parse.urlencode(
         {
             "grant_type": "client_credentials",
+            "client_id": app_id,
+            "client_secret": app_secret,
             "resource": management_resource,
             "scope": "all",
         }
@@ -327,10 +338,7 @@ def _get_m2m_token() -> str | None:
     data = _http_json(
         "POST",
         f"{endpoint}/oidc/token",
-        headers={
-            "Authorization": f"Basic {basic}",
-            "Content-Type": "application/x-www-form-urlencoded",
-        },
+        headers={"Content-Type": "application/x-www-form-urlencoded"},
         body=body,
     )
     token = data.get("access_token") if isinstance(data, dict) else None
@@ -363,7 +371,16 @@ def _fetch_workspace_scopes_from_logto() -> list[str]:
             matched = resource
             break
     if matched is None:
-        log.warning("No Logto API resource with indicator %s", oauth_resource)
+        indicators = [
+            r.get("indicator")
+            for r in resources
+            if isinstance(r, dict) and r.get("indicator")
+        ]
+        log.warning(
+            "No Logto API resource with indicator %s (found: %s)",
+            oauth_resource,
+            indicators,
+        )
         return []
 
     scopes = matched.get("scopes") or []
@@ -533,7 +550,6 @@ elif authenticator == "generic":
     c.LogtoOAuthenticator.oauth_callback_url = env("OAUTH_CALLBACK_URL")
     c.LogtoOAuthenticator.authorize_url = env("OAUTH_AUTHORIZE_URL")
     c.LogtoOAuthenticator.token_url = env("OAUTH_TOKEN_URL")
-    c.LogtoOAuthenticator.userdata_url = env("OAUTH_USERDATA_URL")
     c.LogtoOAuthenticator.username_claim = env(
         "OAUTH_USERNAME_CLAIM", "preferred_username"
     )
@@ -545,10 +561,15 @@ elif authenticator == "generic":
     c.LogtoOAuthenticator.scope = _oauth_scope_list
     c.LogtoOAuthenticator.enable_auth_state = True
 
+    # Logto access tokens for an API resource are JWTs that /oidc/me rejects.
+    # Take profile claims from the ID token instead.
     oauth_resource = env("OAUTH_RESOURCE", "https://jupyter.kumpe.app")
     if oauth_resource:
         c.LogtoOAuthenticator.extra_authorize_params = {"resource": oauth_resource}
         c.LogtoOAuthenticator.token_params = {"resource": oauth_resource}
+        c.LogtoOAuthenticator.userdata_from_id_token = True
+    else:
+        c.LogtoOAuthenticator.userdata_url = env("OAUTH_USERDATA_URL")
 
     if not crypt_key:
         log.warning(
