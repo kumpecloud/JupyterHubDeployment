@@ -1,5 +1,4 @@
-caddyfile example:
-{{DOMAIN}} {
+jupyter.kumpe.app {
   import ssl_defaults
   reverse_proxy {{nebula.ip}}:8080
 }
