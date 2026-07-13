@@ -20,7 +20,7 @@ from typing import Any
 
 c = get_config()  # noqa: F821
 
-log = logging.getLogger("jupyterhub_config")
+log = logging.getLogger("jupyterhub")
 
 _WORKSPACE_NAME_RE = re.compile(r"^[a-zA-Z0-9._-]+$")
 _workspace_scopes_lock = threading.Lock()
@@ -508,6 +508,7 @@ elif authenticator == "generic":
         def get(self):
             _rebuild_oauth_scope_list()
             self.authenticator.scope = list(_oauth_scope_list)
+            self.log.info("OAuth authorize scopes: %s", self.authenticator.scope)
             return super().get()
 
     class LogtoOAuthenticator(GenericOAuthenticator):
