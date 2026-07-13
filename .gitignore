@@ -8,3 +8,6 @@ __pycache__/
 !/data/.gitkeep
 /workspaces/**
 !/workspaces/.gitkeep
+
+# Added by ggshield
+.cache_ggshield
