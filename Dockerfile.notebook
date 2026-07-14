@@ -2,5 +2,7 @@
 ARG BASE_IMAGE=quay.io/jupyter/minimal-notebook:latest
 FROM ${BASE_IMAGE}
 
-# JupyterLab markdown-it renderer (https://pypi.org/project/jupyterlab-markup/)
-RUN pip install --no-cache-dir jupyterlab-markup
+# jupyterlab-markup is Lab 3-only and breaks Lab 4 images (pulls y-py and downgrades).
+# jupyterlab-myst is the Lab 4+/MyST renderer in the same lineage.
+# https://pypi.org/project/jupyterlab-myst/
+RUN pip install --no-cache-dir jupyterlab-myst
