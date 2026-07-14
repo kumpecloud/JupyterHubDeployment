@@ -226,6 +226,33 @@ def _workspace_names_from_scopes(scopes: list[str]) -> list[str]:
     return names
 
 
+def _workspace_grants_path(username: str) -> str:
+    return os.path.join("/data", "workspace-grants", f"{username}.json")
+
+
+def save_workspace_grants(username: str, workspaces: list[str]) -> None:
+    """Persist grants on disk so spawn does not depend on encrypted auth_state."""
+    path = _workspace_grants_path(username)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w", encoding="utf-8") as handle:
+        json.dump({"workspaces": workspaces}, handle)
+    log.info("Saved workspace grants for %s -> %s (%s)", username, path, workspaces)
+
+
+def load_workspace_grants(username: str) -> list[str]:
+    path = _workspace_grants_path(username)
+    try:
+        with open(path, encoding="utf-8") as handle:
+            data = json.load(handle)
+        workspaces = data.get("workspaces") or []
+        return [str(item) for item in workspaces]
+    except FileNotFoundError:
+        return []
+    except Exception as exc:
+        log.warning("Failed reading workspace grants for %s: %s", username, exc)
+        return []
+
+
 def _ensure_workspace_dir(name: str) -> str:
     """Create workspace dir inside the Hub mount; return host path for Docker binds."""
     container_path = os.path.join(workspaces_root, name)
@@ -241,7 +268,9 @@ def _ensure_workspace_dir(name: str) -> str:
 
 def configure_spawner_volumes(spawner, workspaces: list[str]) -> None:
     """Set personal + shared workspace bind mounts on a Spawner."""
-    volumes: dict[str, str] = {personal_volume: notebook_dir}
+    volumes: dict[str, Any] = {
+        personal_volume: {"bind": notebook_dir, "mode": "rw"},
+    }
 
     if data_host_path:
         user_dir = os.path.join(data_host_path, "users", spawner.user.name)
@@ -251,7 +280,9 @@ def configure_spawner_volumes(spawner, workspaces: list[str]) -> None:
             os.chown(container_user_dir, workspace_fs_uid, workspace_fs_gid)
         except PermissionError:
             log.warning("Could not chown %s", container_user_dir)
-        volumes = {user_dir: notebook_dir}
+        volumes = {
+            user_dir: {"bind": notebook_dir, "mode": "rw"},
+        }
 
     mounted: list[str] = []
     for name in workspaces:
@@ -261,41 +292,51 @@ def configure_spawner_volumes(spawner, workspaces: list[str]) -> None:
             continue
         host_path = _ensure_workspace_dir(safe)
         mount_path = f"{workspace_mount_base.rstrip('/')}/{safe}"
-        volumes[host_path] = mount_path
+        volumes[host_path] = {"bind": mount_path, "mode": "rw"}
         mounted.append(f"{host_path} -> {mount_path}")
 
     spawner.volumes = volumes
     log.info(
-        "Configured spawn volumes for %s: personal + %s",
+        "Configured spawn volumes for %s (workspaces_root=%s exists=%s): %s",
         spawner.user.name,
+        workspaces_root,
+        os.path.isdir(workspaces_root),
         mounted or "no shared workspaces",
     )
 
 
 # Ensure shared root exists in the Hub container on startup.
 os.makedirs(workspaces_root, exist_ok=True)
-if workspaces_host_path and not os.path.isdir(workspaces_root):
-    log.warning(
-        "WORKSPACES_ROOT=%s is missing inside the Hub container; "
-        "check compose bind for WORKSPACES_HOST_PATH=%s",
-        workspaces_root,
-        workspaces_host_path,
+log.info(
+    "Workspace storage: root=%s host=%s exists=%s",
+    workspaces_root,
+    workspaces_host_path,
+    os.path.isdir(workspaces_root),
+)
+
+
+def _workspaces_for_user(spawner, auth_state: dict[str, Any] | None = None) -> list[str]:
+    auth_state = auth_state or {}
+    workspaces = list(
+        getattr(spawner, "workspaces", None)
+        or auth_state.get("workspaces")
+        or load_workspace_grants(spawner.user.name)
+        or []
     )
+    return workspaces
 
 
 async def pre_spawn_configure_volumes(spawner) -> None:
     auth_state = await spawner.user.get_auth_state() or {}
-    workspaces = list(
-        getattr(spawner, "workspaces", None)
-        or auth_state.get("workspaces")
-        or []
-    )
+    workspaces = _workspaces_for_user(spawner, auth_state)
     configure_spawner_volumes(spawner, workspaces)
 
 
 def auth_state_hook(spawner, auth_state) -> None:
     """Stash workspaces on the spawner so pre_spawn_hook always sees them."""
-    workspaces = (auth_state or {}).get("workspaces") or []
+    workspaces = (auth_state or {}).get("workspaces") or load_workspace_grants(
+        spawner.user.name
+    )
     spawner.workspaces = workspaces
     log.info("auth_state_hook user=%s workspaces=%s", spawner.user.name, workspaces)
 
@@ -572,9 +613,12 @@ elif authenticator == "generic":
                 f"{workspace_scope_prefix}{name}" for name in workspaces
             ]
             result["auth_state"] = auth_state
+            username = result.get("name") or ""
+            if username:
+                save_workspace_grants(username, workspaces)
             self.log.info(
                 "Logto workspaces for %s: %s",
-                result.get("name"),
+                username,
                 workspaces,
             )
             return result
@@ -582,11 +626,15 @@ elif authenticator == "generic":
         async def pre_spawn_start(self, user, spawner):
             """Apply shared workspace mounts before the notebook container starts."""
             auth_state = await user.get_auth_state() or {}
-            workspaces = list(auth_state.get("workspaces") or [])
+            workspaces = list(
+                auth_state.get("workspaces") or load_workspace_grants(user.name) or []
+            )
             self.log.info(
-                "pre_spawn_start user=%s auth_state_workspaces=%s",
+                "pre_spawn_start user=%s workspaces=%s (auth_state=%s file=%s)",
                 user.name,
                 workspaces,
+                auth_state.get("workspaces"),
+                load_workspace_grants(user.name),
             )
             configure_spawner_volumes(spawner, workspaces)
 
