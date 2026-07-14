@@ -236,6 +236,11 @@ def save_workspace_grants(username: str, workspaces: list[str]) -> None:
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path, "w", encoding="utf-8") as handle:
         json.dump({"workspaces": workspaces}, handle)
+    # Create shared dirs at login so they appear on the host even before spawn.
+    for name in workspaces:
+        safe = _sanitize_workspace_name(str(name))
+        if safe:
+            _ensure_workspace_dir(safe)
     log.info("Saved workspace grants for %s -> %s (%s)", username, path, workspaces)
 
 
