@@ -46,13 +46,14 @@ Persistent data lives next to compose (not named volumes):
 ## Logto shared workspaces
 
 1. API resource indicator = `OAUTH_RESOURCE` (e.g. `https://jupyter.kumpe.app`)
-2. Permissions named `jupyterhub:workspace:<name>` (e.g. `jupyterhub:workspace:kumpe3d`)
+2. Permissions named `jupyter:workspace:<name>` (e.g. `jupyter:workspace:public`)
 3. Assign via roles to users
 4. Create an M2M app with Management API access; set `LOGTO_M2M_*` and `LOGTO_MANAGEMENT_API_RESOURCE=https://default.kumpe.app/api` in `.env`
 5. Hub polls the API resource scopes and requests them on every login
 6. After adding a **new** workspace permission: wait for the poll (`WORKSPACE_SCOPE_POLL_SECONDS`), then **logout and login** once
+7. Set `WORKSPACE_SCOPE_PREFIX=jupyter:workspace:` to match Logto permission names
 
-Granted workspaces mount at `/home/jovyan/workspaces/<name>` inside the notebook.
+Granted workspaces mount at `/home/jovyan/work/workspaces/<name>` inside the notebook (visible in the JupyterLab file browser).
 
 ## Idle servers
 

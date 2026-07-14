@@ -17,10 +17,9 @@ services:
     volumes:
       # Lets JupyterHub spawn sibling user containers on the host Docker daemon
       - /var/run/docker.sock:/var/run/docker.sock
-      # Hub DB / cookie secret / per-user notebook dirs (./data/users/<user>)
-      - ./data:/data
-      # Shared Logto workspaces (./workspaces/<name>)
-      - ./workspaces:/workspaces
+      # Prefer absolute host paths so Hub binds match WORKSPACES_HOST_PATH / DATA_HOST_PATH
+      - ${DATA_HOST_PATH:-./data}:/data
+      - ${WORKSPACES_HOST_PATH:-./workspaces}:/workspaces
     ports:
       - "${JUPYTERHUB_PORT:-8000}:8000"
     networks:
