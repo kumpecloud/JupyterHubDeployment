@@ -7,7 +7,7 @@ services:
       - .env
     environment:
       DOCKER_NETWORK_NAME: ${DOCKER_NETWORK_NAME:-jupyterhub_network}
-      DOCKER_JUPYTER_IMAGE: ${DOCKER_JUPYTER_IMAGE:-quay.io/jupyter/minimal-notebook:latest}
+      DOCKER_JUPYTER_IMAGE: ${DOCKER_JUPYTER_IMAGE:-ghcr.io/kumpecloud/jupyterhubdeployment-notebook:latest}
       JUPYTERHUB_HUB_CONNECT_IP: jupyterhub
       # Paths inside the Hub container (bind sources below)
       WORKSPACES_ROOT: /workspaces

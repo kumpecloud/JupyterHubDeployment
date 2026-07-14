@@ -171,7 +171,10 @@ c.JupyterHub.spawner_class = "dockerspawner.DockerSpawner"
 
 network_name = env("DOCKER_NETWORK_NAME", "jupyterhub_network")
 c.DockerSpawner.network_name = network_name
-c.DockerSpawner.image = env("DOCKER_JUPYTER_IMAGE", "quay.io/jupyter/minimal-notebook:latest")
+c.DockerSpawner.image = env(
+    "DOCKER_JUPYTER_IMAGE",
+    "ghcr.io/kumpecloud/jupyterhubdeployment-notebook:latest",
+)
 c.DockerSpawner.pull_policy = env("DOCKER_PULL_POLICY", "ifnotpresent")
 c.DockerSpawner.remove = env_bool("DOCKER_SPAWNER_REMOVE", True)
 c.DockerSpawner.use_internal_ip = True

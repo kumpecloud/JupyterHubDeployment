@@ -38,7 +38,7 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Extract metadata (tags, labels)
+      - name: Extract metadata (tags, labels) — Hub
         id: meta
         uses: docker/metadata-action@v5
         with:
@@ -50,7 +50,19 @@ jobs:
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
 
-      - name: Build and push
+      - name: Extract metadata (tags, labels) — notebook
+        id: meta_notebook
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}-notebook
+          tags: |
+            type=raw,value=latest,enable={{is_default_branch}}
+            type=sha,prefix=sha-
+            type=ref,event=tag
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+
+      - name: Build and push Hub image
         id: build
         uses: docker/build-push-action@v6
         with:
@@ -59,14 +71,35 @@ jobs:
           push: ${{ github.event_name != 'pull_request' }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          cache-from: type=gha,scope=hub
+          cache-to: type=gha,mode=max,scope=hub
           platforms: linux/amd64,linux/arm64
 
-      - name: Generate artifact attestation
+      - name: Build and push notebook image
+        id: build_notebook
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile.notebook
+          push: ${{ github.event_name != 'pull_request' }}
+          tags: ${{ steps.meta_notebook.outputs.tags }}
+          labels: ${{ steps.meta_notebook.outputs.labels }}
+          cache-from: type=gha,scope=notebook
+          cache-to: type=gha,mode=max,scope=notebook
+          platforms: linux/amd64,linux/arm64
+
+      - name: Generate Hub artifact attestation
         if: github.event_name != 'pull_request'
         uses: actions/attest-build-provenance@v2
         with:
           subject-name: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
           subject-digest: ${{ steps.build.outputs.digest }}
+          push-to-registry: true
+
+      - name: Generate notebook artifact attestation
+        if: github.event_name != 'pull_request'
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-name: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}-notebook
+          subject-digest: ${{ steps.build_notebook.outputs.digest }}
           push-to-registry: true
