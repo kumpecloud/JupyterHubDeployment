@@ -83,6 +83,9 @@ if allowed_users:
 else:
     c.Authenticator.allow_all = True
 
+# Stop user servers on Hub logout so revoked mounts cannot linger in live containers.
+c.JupyterHub.shutdown_on_logout = env_bool("SHUTDOWN_ON_LOGOUT", True)
+
 # ---------------------------------------------------------------------------
 # Idle culling (stop unused servers; optional purge inactive Hub users)
 # ---------------------------------------------------------------------------
@@ -360,30 +363,33 @@ log.info(
 )
 
 
-def _workspaces_for_user(spawner, auth_state: dict[str, Any] | None = None) -> list[str]:
-    auth_state = auth_state or {}
-    workspaces = list(
-        getattr(spawner, "workspaces", None)
-        or auth_state.get("workspaces")
-        or load_workspace_grants(spawner.user.name)
-        or []
-    )
-    return workspaces
+def _grant_file_exists(username: str) -> bool:
+    return os.path.exists(_workspace_grants_path(username))
 
 
 async def pre_spawn_configure_volumes(spawner) -> None:
-    auth_state = await spawner.user.get_auth_state() or {}
-    workspaces = _workspaces_for_user(spawner, auth_state)
+    # Volumes are normally set in Authenticator.pre_spawn_start. This runs after
+    # auth_state_hook and must not reintroduce revoked mounts from stale auth_state.
+    workspaces = list(getattr(spawner, "workspaces", None) or [])
+    if not workspaces and _grant_file_exists(spawner.user.name):
+        workspaces = load_workspace_grants(spawner.user.name)
     configure_spawner_volumes(spawner, workspaces)
 
 
 def auth_state_hook(spawner, auth_state) -> None:
-    """Stash workspaces on the spawner so pre_spawn_hook always sees them."""
-    workspaces = (auth_state or {}).get("workspaces") or load_workspace_grants(
-        spawner.user.name
-    )
+    """Apply workspaces after Authenticator.pre_spawn_start (spawn order).
+
+    Prefer the grants file written by the live Logto refresh — encrypted
+    auth_state can still list revoked workspaces until the next login.
+    """
+    username = spawner.user.name
+    if _grant_file_exists(username):
+        workspaces = load_workspace_grants(username)
+    else:
+        workspaces = list((auth_state or {}).get("workspaces") or [])
     spawner.workspaces = workspaces
-    log.info("auth_state_hook user=%s workspaces=%s", spawner.user.name, workspaces)
+    configure_spawner_volumes(spawner, workspaces)
+    log.info("auth_state_hook user=%s workspaces=%s", username, workspaces)
 
 
 c.Spawner.pre_spawn_hook = pre_spawn_configure_volumes
@@ -532,6 +538,7 @@ def fetch_user_workspaces_from_logto(logto_user_id: str) -> list[str] | None:
     """Return current workspace names for a Logto user via Management API.
 
     Returns None on failure so callers can keep the prior grant file.
+    An empty list means the user currently has no workspace grants.
     """
     if not logto_user_id:
         return None
@@ -567,13 +574,26 @@ def fetch_user_workspaces_from_logto(logto_user_id: str) -> list[str] | None:
                 if not isinstance(scope, dict):
                     continue
                 resource = scope.get("resource") or {}
-                indicator = resource.get("indicator") if isinstance(resource, dict) else None
+                if isinstance(resource, dict):
+                    indicator = resource.get("indicator")
+                elif isinstance(resource, str):
+                    indicator = resource
+                else:
+                    indicator = scope.get("resourceId") or scope.get("indicator")
                 if oauth_resource and indicator and indicator != oauth_resource:
                     continue
                 name = scope.get("name") or ""
                 if name and name not in scope_names:
                     scope_names.append(name)
-        return _workspace_names_from_scopes(scope_names)
+        workspaces = _workspace_names_from_scopes(scope_names)
+        log.info(
+            "Logto Management API workspaces for %s: %s (raw scopes=%s roles=%s)",
+            logto_user_id,
+            workspaces,
+            scope_names,
+            [r.get("name") for r in roles if isinstance(r, dict)],
+        )
+        return workspaces
     except Exception as exc:
         log.warning(
             "Failed refreshing Logto workspaces for user id %s: %s",
@@ -581,6 +601,106 @@ def fetch_user_workspaces_from_logto(logto_user_id: str) -> list[str] | None:
             exc,
         )
         return None
+
+
+def resolve_logto_user_id(username: str, auth_state: dict[str, Any] | None = None) -> str | None:
+    """Resolve Logto user id from auth_state, grants file, or Management API search."""
+    auth_state = auth_state or {}
+    for key in ("logto_user_id",):
+        value = auth_state.get(key)
+        if value:
+            return str(value)
+
+    oauth_user = auth_state.get("oauth_user") or {}
+    for key in ("sub", "id", "userId"):
+        value = oauth_user.get(key)
+        if value:
+            return str(value)
+
+    id_token = auth_state.get("id_token")
+    if id_token:
+        sub = _decode_jwt_payload(id_token).get("sub")
+        if sub:
+            return str(sub)
+
+    record = load_workspace_grant_record(username)
+    if record.get("logto_user_id"):
+        return str(record["logto_user_id"])
+
+    endpoint = (env("LOGTO_ENDPOINT") or "").rstrip("/")
+    try:
+        token = _get_m2m_token()
+        if not token or not endpoint:
+            return None
+        # Search users by username (Logto Management API search).
+        query = urllib.parse.urlencode(
+            {
+                "page_size": 20,
+                "search_params[mode]": "exact",
+                "search_params[fields][]": "username",
+                "search": username,
+            },
+            doseq=True,
+        )
+        users = _http_json(
+            "GET",
+            f"{endpoint}/api/users?{query}",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        if not isinstance(users, list):
+            raise RuntimeError(f"Unexpected users search response: {users!r}")
+        for user in users:
+            if not isinstance(user, dict):
+                continue
+            if user.get("username") == username or user.get("primaryEmail") == username:
+                user_id = user.get("id")
+                if user_id:
+                    log.info("Resolved Logto user id for %s -> %s", username, user_id)
+                    return str(user_id)
+        # Fallback: first exact username match after loose search
+        for user in users:
+            if isinstance(user, dict) and user.get("username") == username and user.get("id"):
+                return str(user["id"])
+    except Exception as exc:
+        log.warning("Failed resolving Logto user id for %s: %s", username, exc)
+    return None
+
+
+def resolve_workspaces_for_spawn(
+    username: str,
+    auth_state: dict[str, Any] | None = None,
+) -> tuple[list[str], bool]:
+    """Current workspaces for spawn, preferring a live Logto Management API refresh.
+
+    Returns (workspaces, refreshed). refreshed=True means Management API answered
+    (including an empty list after revoke). Disk/auth_state are only used on API failure.
+    """
+    auth_state = auth_state or {}
+    logto_user_id = resolve_logto_user_id(username, auth_state)
+    refreshed: list[str] | None = None
+    if logto_user_id:
+        refreshed = fetch_user_workspaces_from_logto(str(logto_user_id))
+    if refreshed is not None:
+        save_workspace_grants(
+            username,
+            refreshed,
+            logto_user_id=str(logto_user_id) if logto_user_id else None,
+        )
+        return refreshed, True
+
+    # Prefer the grants file when present (including []) over stale auth_state.
+    if _grant_file_exists(username):
+        workspaces = load_workspace_grants(username)
+    else:
+        workspaces = list(auth_state.get("workspaces") or [])
+    log.warning(
+        "Spawn for %s could not refresh from Logto (logto_user_id=%s); "
+        "using cached grants=%s",
+        username,
+        logto_user_id,
+        workspaces,
+    )
+    return workspaces, False
 
 
 def refresh_workspace_scope_cache() -> None:
@@ -683,6 +803,15 @@ elif authenticator == "github":
 elif authenticator == "generic":
     from oauthenticator.generic import GenericOAuthenticator
     from oauthenticator.oauth2 import OAuthLoginHandler
+    from jupyterhub.handlers.login import LogoutHandler
+
+    class WorkspaceAwareLogoutHandler(LogoutHandler):
+        async def default_handle_logout(self):
+            user = self.current_user
+            if user is not None:
+                clear_workspace_grants(user.name)
+                self.log.info("Cleared workspace grants on logout for %s", user.name)
+            await super().default_handle_logout()
 
     class LogtoLoginHandler(OAuthLoginHandler):
         """Refresh polled workspace scopes immediately before authorize redirect."""
@@ -697,6 +826,7 @@ elif authenticator == "generic":
         """Generic OIDC with Logto resource param and workspace scopes from poller."""
 
         login_handler = LogtoLoginHandler
+        logout_handler = WorkspaceAwareLogoutHandler
 
         async def authenticate(self, handler, data=None):
             result = await super().authenticate(handler, data)
@@ -714,20 +844,29 @@ elif authenticator == "generic":
             scopes = _scopes_from_token_info(token_info)
             if not scopes and isinstance(auth_state.get("scope"), list):
                 scopes = [str(s) for s in auth_state["scope"]]
-            workspaces = _workspace_names_from_scopes(scopes)
-            auth_state["workspaces"] = workspaces
-            auth_state["workspace_scopes"] = [
-                f"{workspace_scope_prefix}{name}" for name in workspaces
-            ]
             # Prefer Logto subject id for later Management API refresh/revoke checks.
             oauth_user = auth_state.get("oauth_user") or {}
             logto_user_id = (
                 oauth_user.get("sub")
                 or oauth_user.get("id")
-                or (auth_state.get("id_token") and _decode_jwt_payload(auth_state["id_token"]).get("sub"))
+                or oauth_user.get("userId")
             )
+            id_token = auth_state.get("id_token")
+            if not logto_user_id and id_token:
+                logto_user_id = _decode_jwt_payload(id_token).get("sub")
             if logto_user_id:
-                auth_state["logto_user_id"] = logto_user_id
+                auth_state["logto_user_id"] = str(logto_user_id)
+
+            # Token scopes can lag role changes; trust Management API when available.
+            workspaces = _workspace_names_from_scopes(scopes)
+            if logto_user_id:
+                refreshed = fetch_user_workspaces_from_logto(str(logto_user_id))
+                if refreshed is not None:
+                    workspaces = refreshed
+            auth_state["workspaces"] = workspaces
+            auth_state["workspace_scopes"] = [
+                f"{workspace_scope_prefix}{name}" for name in workspaces
+            ]
             result["auth_state"] = auth_state
             username = result.get("name") or ""
             if username:
@@ -737,53 +876,36 @@ elif authenticator == "generic":
                     logto_user_id=str(logto_user_id) if logto_user_id else None,
                 )
             self.log.info(
-                "Logto workspaces for %s: %s",
+                "Logto workspaces for %s: %s (logto_user_id=%s)",
                 username,
                 workspaces,
+                logto_user_id,
             )
             return result
 
         async def pre_spawn_start(self, user, spawner):
             """Apply shared workspace mounts before the notebook container starts."""
             auth_state = await user.get_auth_state() or {}
-            record = load_workspace_grant_record(user.name)
-            logto_user_id = (
-                auth_state.get("logto_user_id")
-                or record.get("logto_user_id")
+            workspaces, did_refresh = resolve_workspaces_for_spawn(
+                user.name, auth_state
             )
-            refreshed = None
+            # Keep encrypted auth_state in sync so later hooks cannot remount revoked dirs.
+            auth_state["workspaces"] = workspaces
+            auth_state["workspace_scopes"] = [
+                f"{workspace_scope_prefix}{name}" for name in workspaces
+            ]
+            logto_user_id = resolve_logto_user_id(user.name, auth_state)
             if logto_user_id:
-                refreshed = fetch_user_workspaces_from_logto(str(logto_user_id))
-            if refreshed is not None:
-                workspaces = refreshed
-                save_workspace_grants(
-                    user.name,
-                    workspaces,
-                    logto_user_id=str(logto_user_id),
-                )
-            else:
-                workspaces = list(
-                    auth_state.get("workspaces")
-                    or load_workspace_grants(user.name)
-                    or []
-                )
+                auth_state["logto_user_id"] = str(logto_user_id)
+            await user.save_auth_state(auth_state)
+            spawner.workspaces = workspaces
             self.log.info(
                 "pre_spawn_start user=%s workspaces=%s (refreshed=%s)",
                 user.name,
                 workspaces,
-                refreshed is not None,
+                did_refresh,
             )
             configure_spawner_volumes(spawner, workspaces)
-
-        async def pre_logout(self, user):
-            """Drop grants and stop servers so revoked mounts cannot linger."""
-            clear_workspace_grants(user.name)
-            try:
-                if user.running:
-                    self.log.info("Stopping server for %s on logout", user.name)
-                    await user.stop()
-            except Exception as exc:
-                self.log.warning("Failed stopping %s on logout: %s", user.name, exc)
 
     c.JupyterHub.authenticator_class = LogtoOAuthenticator
     c.LogtoOAuthenticator.client_id = env("OAUTH_CLIENT_ID")
