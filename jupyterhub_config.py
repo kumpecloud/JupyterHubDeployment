@@ -175,7 +175,7 @@ c.DockerSpawner.image = env(
     "DOCKER_JUPYTER_IMAGE",
     "ghcr.io/kumpecloud/jupyterhubdeployment-notebook:latest",
 )
-c.DockerSpawner.pull_policy = env("DOCKER_PULL_POLICY", "ifnotpresent")
+c.DockerSpawner.pull_policy = env("DOCKER_PULL_POLICY", "always")
 c.DockerSpawner.remove = env_bool("DOCKER_SPAWNER_REMOVE", True)
 c.DockerSpawner.use_internal_ip = True
 c.DockerSpawner.start_timeout = env_int("DOCKER_SPAWNER_START_TIMEOUT", 300)

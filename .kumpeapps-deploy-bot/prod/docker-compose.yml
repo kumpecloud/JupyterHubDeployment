@@ -8,6 +8,8 @@ services:
     environment:
       DOCKER_NETWORK_NAME: ${DOCKER_NETWORK_NAME:-jupyterhub_network}
       DOCKER_JUPYTER_IMAGE: ${DOCKER_JUPYTER_IMAGE:-ghcr.io/kumpecloud/jupyterhubdeployment-notebook:latest}
+      # Pull missing/updated notebook images via the Docker daemon on spawn
+      DOCKER_PULL_POLICY: ${DOCKER_PULL_POLICY:-always}
       JUPYTERHUB_HUB_CONNECT_IP: jupyterhub
       # Paths inside the Hub container (bind sources below)
       WORKSPACES_ROOT: /workspaces
@@ -25,6 +27,17 @@ services:
     networks:
       - jupyterhub_network
     restart: unless-stopped
+    depends_on:
+      notebook-image:
+        condition: service_completed_successfully
+
+  # Pre-pull the user notebook image onto the host during compose up so DockerSpawner
+  # can spawn without a first-time registry miss (especially for private GHCR packages).
+  notebook-image:
+    image: ${DOCKER_JUPYTER_IMAGE:-ghcr.io/kumpecloud/jupyterhubdeployment-notebook:latest}
+    pull_policy: always
+    entrypoint: ["true"]
+    restart: "no"
 
 networks:
   jupyterhub_network:
