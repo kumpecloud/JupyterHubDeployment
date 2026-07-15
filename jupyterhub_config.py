@@ -65,9 +65,44 @@ c.JupyterHub.bind_url = env("JUPYTERHUB_BIND_URL", "http://:8000")
 c.JupyterHub.hub_ip = env("JUPYTERHUB_HUB_IP", "0.0.0.0")
 c.JupyterHub.hub_connect_ip = env("JUPYTERHUB_HUB_CONNECT_IP", "jupyterhub")
 c.JupyterHub.db_url = env("JUPYTERHUB_DB_URL", "sqlite:////data/jupyterhub.sqlite")
-c.JupyterHub.cookie_secret_file = env(
-    "JUPYTERHUB_COOKIE_SECRET_FILE", "/data/jupyterhub_cookie_secret"
+_cookie_secret_file = (
+    env("JUPYTERHUB_COOKIE_SECRET_FILE", "/data/jupyterhub_cookie_secret")
+    or "/data/jupyterhub_cookie_secret"
 )
+c.JupyterHub.cookie_secret_file = _cookie_secret_file
+
+
+def _ensure_private_cookie_secret_file(path: str) -> None:
+    """JupyterHub refuses cookie secrets that are group/world accessible."""
+    directory = os.path.dirname(path)
+    if directory:
+        os.makedirs(directory, exist_ok=True)
+    if os.path.exists(path):
+        try:
+            os.chmod(path, 0o600)
+        except OSError as exc:
+            log.warning("Could not chmod cookie_secret_file %s to 0600: %s", path, exc)
+        return
+    # Pre-create with safe mode so a loose container umask cannot leave it world-readable.
+    secret = os.urandom(32).hex().encode("ascii")
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+    try:
+        fd = os.open(path, flags, 0o600)
+    except FileExistsError:
+        try:
+            os.chmod(path, 0o600)
+        except OSError as exc:
+            log.warning("Could not chmod cookie_secret_file %s to 0600: %s", path, exc)
+        return
+    except OSError as exc:
+        log.warning("Could not create cookie_secret_file %s: %s", path, exc)
+        return
+    with os.fdopen(fd, "wb") as handle:
+        handle.write(secret)
+    log.info("Created cookie_secret_file %s with mode 0600", path)
+
+
+_ensure_private_cookie_secret_file(_cookie_secret_file)
 
 crypt_key = env("JUPYTERHUB_CRYPT_KEY")
 if crypt_key:
@@ -175,6 +210,12 @@ c.DockerSpawner.image = env(
     "DOCKER_JUPYTER_IMAGE",
     "ghcr.io/kumpecloud/jupyterhubdeployment-notebook:latest",
 )
+c.DockerSpawner.environment = {
+    'MYSQL_HOST': env("DOCKER_SPAWNER_MYSQL_HOST", ""),
+    'MYSQL_USER': env("DOCKER_SPAWNER_MYSQL_USER", ""),
+    'MYSQL_PASSWORD': env("DOCKER_SPAWNER_MYSQL_PASSWORD", ""),
+    'MYSQL_DATABASE': env("DOCKER_SPAWNER_MYSQL_DATABASE", "")
+}
 c.DockerSpawner.pull_policy = env("DOCKER_PULL_POLICY", "always")
 c.DockerSpawner.remove = env_bool("DOCKER_SPAWNER_REMOVE", True)
 c.DockerSpawner.use_internal_ip = True
