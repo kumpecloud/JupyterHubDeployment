@@ -46,7 +46,7 @@ Persistent data lives next to compose (not named volumes):
 ## Logto shared workspaces
 
 1. API resource indicator = `OAUTH_RESOURCE` (e.g. `https://jupyter.kumpe.app`)
-2. Permissions named `jupyter:workspace:<name>` (e.g. `jupyter:workspace:public`)
+2. Permissions named `jupyter:workspace:<name>:read` or `jupyter:workspace:<name>:write` (e.g. `jupyter:workspace:public:read`)
 3. Assign via roles to users
 4. Create an M2M app with Management API access; set `LOGTO_M2M_*` and `LOGTO_MANAGEMENT_API_RESOURCE=https://default.kumpe.app/api` in `.env`
 5. Hub polls the API resource scopes and requests them on every login
@@ -54,7 +54,7 @@ After adding a **new** workspace permission: wait for the poll, then logout/logi
 
 Revoking access: spawn re-checks Logto roles via Management API, and Hub logout clears grants and stops the user server so live mounts do not linger.
 
-Granted workspaces appear in the JupyterLab **File Browser** under `workspaces/<name>` (mounted at `/home/jovyan/work/workspaces/<name>`).
+Granted workspaces appear in the JupyterLab **File Browser** under `workspaces/<name>` (mounted at `/home/jovyan/work/workspaces/<name>`). `:read` mounts are read-only; `:write` mounts are read-write. If both are granted, write wins.
 
 Note: the JupyterLab URL `/lab/workspaces/auto-P` is JupyterLab’s own UI layout “workspace,” not a shared data folder. Use the file browser (left sidebar) to open shared folders.
 

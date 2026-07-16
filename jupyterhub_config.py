@@ -228,11 +228,44 @@ c.DockerSpawner.name_template = env(
 notebook_dir = env("DOCKER_NOTEBOOK_DIR", "/home/jovyan/work")
 c.DockerSpawner.notebook_dir = notebook_dir
 
-# Host paths for bind mounts (Docker daemon sees these). Compose-adjacent defaults
-# are ./data and ./workspaces — set absolute DATA_HOST_PATH / WORKSPACES_HOST_PATH.
-data_host_path = env("DATA_HOST_PATH")
+# Host paths for bind mounts (Docker daemon sees these). Relative values like
+# ./data are rejected by Docker — resolve against HOST_PROJECT_DIR when needed.
+host_project_dir = env("HOST_PROJECT_DIR")
+
+
+def _absolute_host_path(path: str | None, *, label: str) -> str | None:
+    """Return an absolute host path suitable for Docker bind mounts, or None."""
+    if not path:
+        return None
+    path = path.strip()
+    if not path:
+        return None
+    if os.path.isabs(path):
+        return os.path.normpath(path)
+    if host_project_dir and os.path.isabs(host_project_dir):
+        resolved = os.path.normpath(os.path.join(host_project_dir, path))
+        log.warning(
+            "%s=%r is not absolute; resolved to %s via HOST_PROJECT_DIR",
+            label,
+            path,
+            resolved,
+        )
+        return resolved
+    log.error(
+        "%s=%r is not absolute and HOST_PROJECT_DIR is unset/relative. "
+        "Docker bind mounts require absolute host paths "
+        "(e.g. /home/.../data). Falling back to named volumes.",
+        label,
+        path,
+    )
+    return None
+
+
+data_host_path = _absolute_host_path(env("DATA_HOST_PATH"), label="DATA_HOST_PATH")
 workspaces_root = env("WORKSPACES_ROOT", "/workspaces") or "/workspaces"
-workspaces_host_path = env("WORKSPACES_HOST_PATH")
+workspaces_host_path = _absolute_host_path(
+    env("WORKSPACES_HOST_PATH"), label="WORKSPACES_HOST_PATH"
+)
 # Default under notebook_dir so JupyterLab's file browser shows them immediately.
 workspace_mount_base = env(
     "WORKSPACE_MOUNT_BASE",
@@ -250,6 +283,12 @@ else:
     personal_volume = "jupyterhub-user-{username}"
 
 c.DockerSpawner.volumes = {personal_volume: notebook_dir}
+log.info(
+    "Spawn storage: data_host=%s workspaces_host=%s personal=%s",
+    data_host_path,
+    workspaces_host_path,
+    personal_volume,
+)
 
 
 def _sanitize_workspace_name(name: str) -> str | None:
@@ -261,16 +300,91 @@ def _sanitize_workspace_name(name: str) -> str | None:
     return name
 
 
-def _workspace_names_from_scopes(scopes: list[str]) -> list[str]:
-    names: list[str] = []
+def _normalize_access_mode(mode: str | None) -> str:
+    """Return Docker bind mode: 'ro' or 'rw'."""
+    value = (mode or "").strip().lower()
+    if value in {"ro", "read", "readonly", "read-only"}:
+        return "ro"
+    return "rw"
+
+
+def _normalize_workspace_grants(workspaces: Any) -> dict[str, str]:
+    """Normalize grants to {workspace_name: 'ro'|'rw'}.
+
+    Accepts:
+    - dict mapping name -> mode
+    - list of workspace names (legacy; treated as rw)
+    """
+    grants: dict[str, str] = {}
+    if isinstance(workspaces, dict):
+        for name, mode in workspaces.items():
+            safe = _sanitize_workspace_name(str(name))
+            if not safe:
+                continue
+            normalized = _normalize_access_mode(str(mode) if mode is not None else None)
+            if safe not in grants or normalized == "rw":
+                grants[safe] = normalized
+        return grants
+    if isinstance(workspaces, list):
+        for item in workspaces:
+            if isinstance(item, dict):
+                raw_name = item.get("name") or item.get("workspace") or ""
+                safe = _sanitize_workspace_name(str(raw_name))
+                if not safe:
+                    continue
+                normalized = _normalize_access_mode(
+                    str(item.get("mode") or item.get("access") or "rw")
+                )
+            else:
+                safe = _sanitize_workspace_name(str(item))
+                if not safe:
+                    continue
+                normalized = "rw"
+            if safe not in grants or normalized == "rw":
+                grants[safe] = normalized
+    return grants
+
+
+def _workspace_grants_from_scopes(scopes: list[str]) -> dict[str, str]:
+    """Parse Logto scopes into workspace grants.
+
+    Supported permission names:
+      jupyter:workspace:{name}:read   -> read-only mount
+      jupyter:workspace:{name}:write  -> read-write mount
+
+    Legacy jupyter:workspace:{name} (no suffix) is treated as write.
+    If both read and write are present for the same workspace, write wins.
+    """
+    grants: dict[str, str] = {}
     for scope in scopes:
         if not scope.startswith(workspace_scope_prefix):
             continue
         raw = scope[len(workspace_scope_prefix) :]
+        mode = "rw"
+        if raw.endswith(":read"):
+            mode = "ro"
+            raw = raw[: -len(":read")]
+        elif raw.endswith(":write"):
+            mode = "rw"
+            raw = raw[: -len(":write")]
         safe = _sanitize_workspace_name(raw)
-        if safe and safe not in names:
-            names.append(safe)
-    return names
+        if not safe:
+            continue
+        if safe not in grants or mode == "rw":
+            grants[safe] = mode
+    return grants
+
+
+def _workspace_names_from_scopes(scopes: list[str]) -> list[str]:
+    return list(_workspace_grants_from_scopes(scopes).keys())
+
+
+def _workspace_scope_strings(grants: dict[str, str]) -> list[str]:
+    scopes: list[str] = []
+    for name, mode in grants.items():
+        suffix = "write" if mode == "rw" else "read"
+        scopes.append(f"{workspace_scope_prefix}{name}:{suffix}")
+    return scopes
 
 
 def _workspace_grants_path(username: str) -> str:
@@ -279,14 +393,15 @@ def _workspace_grants_path(username: str) -> str:
 
 def save_workspace_grants(
     username: str,
-    workspaces: list[str],
+    workspaces: dict[str, str] | list[str],
     *,
     logto_user_id: str | None = None,
 ) -> None:
     """Persist grants on disk so spawn does not depend on encrypted auth_state."""
     path = _workspace_grants_path(username)
     os.makedirs(os.path.dirname(path), exist_ok=True)
-    payload: dict[str, Any] = {"workspaces": workspaces}
+    grants = _normalize_workspace_grants(workspaces)
+    payload: dict[str, Any] = {"workspaces": grants}
     if logto_user_id:
         payload["logto_user_id"] = logto_user_id
     else:
@@ -300,25 +415,22 @@ def save_workspace_grants(
             pass
     with open(path, "w", encoding="utf-8") as handle:
         json.dump(payload, handle)
-    for name in workspaces:
-        safe = _sanitize_workspace_name(str(name))
-        if safe:
-            _ensure_workspace_dir(safe)
-    log.info("Saved workspace grants for %s -> %s (%s)", username, path, workspaces)
+    for name in grants:
+        _ensure_workspace_dir(name)
+    log.info("Saved workspace grants for %s -> %s (%s)", username, path, grants)
 
 
-def load_workspace_grants(username: str) -> list[str]:
+def load_workspace_grants(username: str) -> dict[str, str]:
     path = _workspace_grants_path(username)
     try:
         with open(path, encoding="utf-8") as handle:
             data = json.load(handle)
-        workspaces = data.get("workspaces") or []
-        return [str(item) for item in workspaces]
+        return _normalize_workspace_grants(data.get("workspaces") or {})
     except FileNotFoundError:
-        return []
+        return {}
     except Exception as exc:
         log.warning("Failed reading workspace grants for %s: %s", username, exc)
-        return []
+        return {}
 
 
 def load_workspace_grant_record(username: str) -> dict[str, Any]:
@@ -358,8 +470,11 @@ def _ensure_workspace_dir(name: str) -> str:
     return container_path
 
 
-def configure_spawner_volumes(spawner, workspaces: list[str]) -> None:
+def configure_spawner_volumes(
+    spawner, workspaces: dict[str, str] | list[str]
+) -> None:
     """Set personal + shared workspace bind mounts on a Spawner."""
+    grants = _normalize_workspace_grants(workspaces)
     volumes: dict[str, Any] = {
         personal_volume: {"bind": notebook_dir, "mode": "rw"},
     }
@@ -377,15 +492,11 @@ def configure_spawner_volumes(spawner, workspaces: list[str]) -> None:
         }
 
     mounted: list[str] = []
-    for name in workspaces:
-        safe = _sanitize_workspace_name(str(name))
-        if not safe:
-            log.warning("Skipping invalid workspace name %r", name)
-            continue
-        host_path = _ensure_workspace_dir(safe)
-        mount_path = f"{workspace_mount_base.rstrip('/')}/{safe}"
-        volumes[host_path] = {"bind": mount_path, "mode": "rw"}
-        mounted.append(f"{host_path} -> {mount_path}")
+    for name, mode in grants.items():
+        host_path = _ensure_workspace_dir(name)
+        mount_path = f"{workspace_mount_base.rstrip('/')}/{name}"
+        volumes[host_path] = {"bind": mount_path, "mode": mode}
+        mounted.append(f"{host_path} -> {mount_path} ({mode})")
 
     spawner.volumes = volumes
     log.info(
@@ -414,7 +525,9 @@ def _grant_file_exists(username: str) -> bool:
 async def pre_spawn_configure_volumes(spawner) -> None:
     # Volumes are normally set in Authenticator.pre_spawn_start. This runs after
     # auth_state_hook and must not reintroduce revoked mounts from stale auth_state.
-    workspaces = list(getattr(spawner, "workspaces", None) or [])
+    workspaces = _normalize_workspace_grants(
+        getattr(spawner, "workspaces", None) or {}
+    )
     if not workspaces and _grant_file_exists(spawner.user.name):
         workspaces = load_workspace_grants(spawner.user.name)
     configure_spawner_volumes(spawner, workspaces)
@@ -430,7 +543,9 @@ def auth_state_hook(spawner, auth_state) -> None:
     if _grant_file_exists(username):
         workspaces = load_workspace_grants(username)
     else:
-        workspaces = list((auth_state or {}).get("workspaces") or [])
+        workspaces = _normalize_workspace_grants(
+            (auth_state or {}).get("workspaces") or {}
+        )
     spawner.workspaces = workspaces
     configure_spawner_volumes(spawner, workspaces)
     log.info("auth_state_hook user=%s workspaces=%s", username, workspaces)
@@ -578,11 +693,11 @@ def get_cached_workspace_scopes() -> list[str]:
         return list(_workspace_scopes)
 
 
-def fetch_user_workspaces_from_logto(logto_user_id: str) -> list[str] | None:
-    """Return current workspace names for a Logto user via Management API.
+def fetch_user_workspaces_from_logto(logto_user_id: str) -> dict[str, str] | None:
+    """Return current workspace grants for a Logto user via Management API.
 
     Returns None on failure so callers can keep the prior grant file.
-    An empty list means the user currently has no workspace grants.
+    An empty dict means the user currently has no workspace grants.
     """
     if not logto_user_id:
         return None
@@ -629,7 +744,7 @@ def fetch_user_workspaces_from_logto(logto_user_id: str) -> list[str] | None:
                 name = scope.get("name") or ""
                 if name and name not in scope_names:
                     scope_names.append(name)
-        workspaces = _workspace_names_from_scopes(scope_names)
+        workspaces = _workspace_grants_from_scopes(scope_names)
         log.info(
             "Logto Management API workspaces for %s: %s (raw scopes=%s roles=%s)",
             logto_user_id,
@@ -713,15 +828,15 @@ def resolve_logto_user_id(username: str, auth_state: dict[str, Any] | None = Non
 def resolve_workspaces_for_spawn(
     username: str,
     auth_state: dict[str, Any] | None = None,
-) -> tuple[list[str], bool]:
-    """Current workspaces for spawn, preferring a live Logto Management API refresh.
+) -> tuple[dict[str, str], bool]:
+    """Current workspace grants for spawn, preferring a live Logto Management API refresh.
 
     Returns (workspaces, refreshed). refreshed=True means Management API answered
-    (including an empty list after revoke). Disk/auth_state are only used on API failure.
+    (including an empty dict after revoke). Disk/auth_state are only used on API failure.
     """
     auth_state = auth_state or {}
     logto_user_id = resolve_logto_user_id(username, auth_state)
-    refreshed: list[str] | None = None
+    refreshed: dict[str, str] | None = None
     if logto_user_id:
         refreshed = fetch_user_workspaces_from_logto(str(logto_user_id))
     if refreshed is not None:
@@ -732,11 +847,11 @@ def resolve_workspaces_for_spawn(
         )
         return refreshed, True
 
-    # Prefer the grants file when present (including []) over stale auth_state.
+    # Prefer the grants file when present (including {}) over stale auth_state.
     if _grant_file_exists(username):
         workspaces = load_workspace_grants(username)
     else:
-        workspaces = list(auth_state.get("workspaces") or [])
+        workspaces = _normalize_workspace_grants(auth_state.get("workspaces") or {})
     log.warning(
         "Spawn for %s could not refresh from Logto (logto_user_id=%s); "
         "using cached grants=%s",
@@ -902,15 +1017,13 @@ elif authenticator == "generic":
                 auth_state["logto_user_id"] = str(logto_user_id)
 
             # Token scopes can lag role changes; trust Management API when available.
-            workspaces = _workspace_names_from_scopes(scopes)
+            workspaces = _workspace_grants_from_scopes(scopes)
             if logto_user_id:
                 refreshed = fetch_user_workspaces_from_logto(str(logto_user_id))
                 if refreshed is not None:
                     workspaces = refreshed
             auth_state["workspaces"] = workspaces
-            auth_state["workspace_scopes"] = [
-                f"{workspace_scope_prefix}{name}" for name in workspaces
-            ]
+            auth_state["workspace_scopes"] = _workspace_scope_strings(workspaces)
             result["auth_state"] = auth_state
             username = result.get("name") or ""
             if username:
@@ -935,9 +1048,7 @@ elif authenticator == "generic":
             )
             # Keep encrypted auth_state in sync so later hooks cannot remount revoked dirs.
             auth_state["workspaces"] = workspaces
-            auth_state["workspace_scopes"] = [
-                f"{workspace_scope_prefix}{name}" for name in workspaces
-            ]
+            auth_state["workspace_scopes"] = _workspace_scope_strings(workspaces)
             logto_user_id = resolve_logto_user_id(user.name, auth_state)
             if logto_user_id:
                 auth_state["logto_user_id"] = str(logto_user_id)

@@ -13,15 +13,17 @@ services:
       JUPYTERHUB_HUB_CONNECT_IP: jupyterhub
       # Paths inside the Hub container (bind sources below)
       WORKSPACES_ROOT: /workspaces
+      # Compose project dir — used to resolve relative DATA_HOST_PATH values
+      HOST_PROJECT_DIR: ${PWD}
       # Absolute host paths for DockerSpawner binds (must match the host side of the binds)
-      DATA_HOST_PATH: ${DATA_HOST_PATH}
-      WORKSPACES_HOST_PATH: ${WORKSPACES_HOST_PATH}
+      DATA_HOST_PATH: ${DATA_HOST_PATH:-${PWD}/data}
+      WORKSPACES_HOST_PATH: ${WORKSPACES_HOST_PATH:-${PWD}/workspaces}
     volumes:
       # Lets JupyterHub spawn sibling user containers on the host Docker daemon
       - /var/run/docker.sock:/var/run/docker.sock
       # Prefer absolute host paths so Hub binds match WORKSPACES_HOST_PATH / DATA_HOST_PATH
-      - ${DATA_HOST_PATH:-./data}:/data
-      - ${WORKSPACES_HOST_PATH:-./workspaces}:/workspaces
+      - ${DATA_HOST_PATH:-${PWD}/data}:/data
+      - ${WORKSPACES_HOST_PATH:-${PWD}/workspaces}:/workspaces
     ports:
       - "${JUPYTERHUB_PORT:-8000}:8000"
     networks:
